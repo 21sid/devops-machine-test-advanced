@@ -2,72 +2,223 @@ trigger:
   branches:
     include:
       - main
+  paths:
+    include:
+      - services/**
+      - k8s/**
+
+pr:
+  branches:
+    include:
+      - main
 
 variables:
-  acrName: 'mydevopsacr'
+  acrName: 'acrmicroservicesprod'
   acrLoginServer: '$(acrName).azurecr.io'
-  aksCluster: 'my-aks-cluster'
-  aksResourceGroup: 'devops-rg'
+  aksCluster: 'aks-microservices-prod'
+  aksResourceGroup: 'rg-microservices-prod'
+  k8sNamespace: 'microservices'
   imageTag: '$(Build.BuildId)'
 
 stages:
 
-# ─── STAGE 1: BUILD & PUSH DOCKER IMAGES ────────────────────────────────────
-- stage: Build
-  displayName: 'Build & Push Images to ACR'
+# ─── STAGE 1: VALIDATE (Lint + Unit Test in parallel) ─────────────────────────
+- stage: Validate
+  displayName: 'Stage 1 - Validate: Lint + Unit Tests'
   jobs:
-  - job: BuildPush
-    displayName: 'Docker Build & Push'
+
+  - job: LintTest_AuthService
+    displayName: 'Lint & Test auth-service'
     pool:
       vmImage: 'ubuntu-latest'
     steps:
+    - checkout: self
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '18.x'
+      displayName: 'Install Node.js 18'
+    - script: |
+        cd services/auth-service
+        npm ci
+        npm run lint --if-present
+        npm test --if-present
+      displayName: 'Lint and test auth-service'
 
+  - job: LintTest_OrderService
+    displayName: 'Lint & Test order-service'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '18.x'
+      displayName: 'Install Node.js 18'
+    - script: |
+        cd services/order-service
+        npm ci
+        npm run lint --if-present
+        npm test --if-present
+      displayName: 'Lint and test order-service'
+
+  - job: LintTest_PaymentService
+    displayName: 'Lint & Test payment-service'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '18.x'
+      displayName: 'Install Node.js 18'
+    - script: |
+        cd services/payment-service
+        npm ci
+        npm run lint --if-present
+        npm test --if-present
+      displayName: 'Lint and test payment-service'
+
+  - job: LintTest_Frontend
+    displayName: 'Lint & Test frontend'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+    - script: |
+        echo 'Frontend is static HTML - no tests to run'
+      displayName: 'Validate frontend'
+
+# ─── STAGE 2: BUILD & PUSH (per service, only on changes) ─────────────────────
+- stage: BuildAndPush
+  displayName: 'Stage 2 - Build & Push Docker Images to ACR'
+  dependsOn: Validate
+  condition: succeeded()
+  jobs:
+
+  - job: Build_AuthService
+    displayName: 'Build & Push auth-service'
+    pool:
+      vmImage: 'ubuntu-latest'
+    condition: |
+      or(
+        contains(variables['Build.SourceVersionMessage'], '[auth]'),
+        eq(variables['Build.Reason'], 'Manual'),
+        contains(variables['Build.ChangedFiles'], 'services/auth-service')
+      )
+    steps:
+    - checkout: self
     - task: AzureCLI@2
-      displayName: 'Login to ACR'
+      displayName: 'Build and Push auth-service image'
       inputs:
         azureSubscription: 'AzureServiceConnection'
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
         inlineScript: |
           az acr login --name $(acrName)
+          docker build -t $(acrLoginServer)/auth-service:$(imageTag) \
+                       -t $(acrLoginServer)/auth-service:latest \
+                       ./services/auth-service
+          docker push $(acrLoginServer)/auth-service:$(imageTag)
+          docker push $(acrLoginServer)/auth-service:latest
 
-    - script: |
-        docker build -t $(acrLoginServer)/auth-service:$(imageTag) ./services/auth-service
-        docker push $(acrLoginServer)/auth-service:$(imageTag)
-      displayName: 'Build & Push auth-service'
-
-    - script: |
-        docker build -t $(acrLoginServer)/order-service:$(imageTag) ./services/order-service
-        docker push $(acrLoginServer)/order-service:$(imageTag)
-      displayName: 'Build & Push order-service'
-
-    - script: |
-        docker build -t $(acrLoginServer)/payment-service:$(imageTag) ./services/payment-service
-        docker push $(acrLoginServer)/payment-service:$(imageTag)
-      displayName: 'Build & Push payment-service'
-
-    - script: |
-        docker build -t $(acrLoginServer)/frontend:$(imageTag) ./services/frontend
-        docker push $(acrLoginServer)/frontend:$(imageTag)
-      displayName: 'Build & Push frontend'
-
-# ─── STAGE 2: DEPLOY TO AKS ──────────────────────────────────────────────────
-- stage: Deploy
-  displayName: 'Deploy to AKS'
-  dependsOn: Build
-  jobs:
-  - deployment: DeployAKS
-    displayName: 'Deploy Microservices to AKS'
+  - job: Build_OrderService
+    displayName: 'Build & Push order-service'
     pool:
       vmImage: 'ubuntu-latest'
+    condition: |
+      or(
+        contains(variables['Build.SourceVersionMessage'], '[order]'),
+        eq(variables['Build.Reason'], 'Manual'),
+        contains(variables['Build.ChangedFiles'], 'services/order-service')
+      )
+    steps:
+    - checkout: self
+    - task: AzureCLI@2
+      displayName: 'Build and Push order-service image'
+      inputs:
+        azureSubscription: 'AzureServiceConnection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name $(acrName)
+          docker build -t $(acrLoginServer)/order-service:$(imageTag) \
+                       -t $(acrLoginServer)/order-service:latest \
+                       ./services/order-service
+          docker push $(acrLoginServer)/order-service:$(imageTag)
+          docker push $(acrLoginServer)/order-service:latest
+
+  - job: Build_PaymentService
+    displayName: 'Build & Push payment-service'
+    pool:
+      vmImage: 'ubuntu-latest'
+    condition: |
+      or(
+        contains(variables['Build.SourceVersionMessage'], '[payment]'),
+        eq(variables['Build.Reason'], 'Manual'),
+        contains(variables['Build.ChangedFiles'], 'services/payment-service')
+      )
+    steps:
+    - checkout: self
+    - task: AzureCLI@2
+      displayName: 'Build and Push payment-service image'
+      inputs:
+        azureSubscription: 'AzureServiceConnection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name $(acrName)
+          docker build -t $(acrLoginServer)/payment-service:$(imageTag) \
+                       -t $(acrLoginServer)/payment-service:latest \
+                       ./services/payment-service
+          docker push $(acrLoginServer)/payment-service:$(imageTag)
+          docker push $(acrLoginServer)/payment-service:latest
+
+  - job: Build_Frontend
+    displayName: 'Build & Push frontend'
+    pool:
+      vmImage: 'ubuntu-latest'
+    condition: |
+      or(
+        contains(variables['Build.SourceVersionMessage'], '[frontend]'),
+        eq(variables['Build.Reason'], 'Manual'),
+        contains(variables['Build.ChangedFiles'], 'services/frontend')
+      )
+    steps:
+    - checkout: self
+    - task: AzureCLI@2
+      displayName: 'Build and Push frontend image'
+      inputs:
+        azureSubscription: 'AzureServiceConnection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name $(acrName)
+          docker build -t $(acrLoginServer)/frontend:$(imageTag) \
+                       -t $(acrLoginServer)/frontend:latest \
+                       ./services/frontend
+          docker push $(acrLoginServer)/frontend:$(imageTag)
+          docker push $(acrLoginServer)/frontend:latest
+
+# ─── STAGE 3: DEPLOY to AKS ──────────────────────────────────────────────────
+- stage: Deploy
+  displayName: 'Stage 3 - Deploy to AKS'
+  dependsOn: BuildAndPush
+  condition: succeeded()
+  jobs:
+
+  - deployment: DeployToAKS
+    displayName: 'Deploy all services to AKS'
     environment: 'production'
+    pool:
+      vmImage: 'ubuntu-latest'
     strategy:
       runOnce:
         deploy:
           steps:
+          - checkout: self
 
           - task: AzureCLI@2
-            displayName: 'Get AKS Credentials'
+            displayName: 'Get AKS credentials'
             inputs:
               azureSubscription: 'AzureServiceConnection'
               scriptType: 'bash'
@@ -75,50 +226,46 @@ stages:
               inlineScript: |
                 az aks get-credentials \
                   --resource-group $(aksResourceGroup) \
-                  --name $(aksCluster) --overwrite-existing
+                  --name $(aksCluster) \
+                  --overwrite-existing
 
-          - task: KubernetesManifest@0
-            displayName: 'Apply Namespace'
-            inputs:
-              action: 'deploy'
-              kubernetesServiceConnection: 'AKSServiceConnection'
-              manifests: 'k8s/namespace.yaml'
+          - script: |
+              # Apply namespace first
+              kubectl apply -f k8s/namespace.yaml
 
-          - task: KubernetesManifest@0
-            displayName: 'Apply Secrets'
-            inputs:
-              action: 'deploy'
-              kubernetesServiceConnection: 'AKSServiceConnection'
-              manifests: 'k8s/secrets.yaml'
+              # Apply secrets CSI driver config
+              kubectl apply -f k8s/secrets.yaml
 
-          - task: KubernetesManifest@0
-            displayName: 'Deploy All Services'
-            inputs:
-              action: 'deploy'
-              kubernetesServiceConnection: 'AKSServiceConnection'
-              manifests: |
-                k8s/deployment.yaml
-                k8s/service.yaml
-                k8s/ingress.yaml
-                k8s/hpa.yaml
-              containers: |
-                $(acrLoginServer)/auth-service:$(imageTag)
-                $(acrLoginServer)/order-service:$(imageTag)
-                $(acrLoginServer)/payment-service:$(imageTag)
-                $(acrLoginServer)/frontend:$(imageTag)
+              # Substitute image tag in deployments and apply
+              sed -i "s|\$(ACR_NAME)|$(acrName)|g; s|\$(IMAGE_TAG)|$(imageTag)|g" k8s/deployment.yaml
+              kubectl apply -f k8s/deployment.yaml
 
-# ─── STAGE 3: SMOKE TEST ─────────────────────────────────────────────────────
+              # Apply services, ingress, HPA
+              kubectl apply -f k8s/service.yaml
+              kubectl apply -f k8s/ingress.yaml
+              kubectl apply -f k8s/hpa.yaml
+
+              # Wait for rollout
+              kubectl rollout status deployment/auth-service -n $(k8sNamespace) --timeout=300s
+              kubectl rollout status deployment/order-service -n $(k8sNamespace) --timeout=300s
+              kubectl rollout status deployment/payment-service -n $(k8sNamespace) --timeout=300s
+              kubectl rollout status deployment/frontend -n $(k8sNamespace) --timeout=300s
+            displayName: 'Apply Kubernetes manifests'
+
+# ─── STAGE 4: SMOKE TEST ─────────────────────────────────────────────────────
 - stage: SmokeTest
-  displayName: 'Smoke Test'
+  displayName: 'Stage 4 - Smoke Tests: Health Endpoint Checks'
   dependsOn: Deploy
+  condition: succeeded()
   jobs:
-  - job: HealthCheck
-    displayName: 'Run Health Checks'
+
+  - job: SmokeTests
+    displayName: 'Health endpoint smoke tests'
     pool:
       vmImage: 'ubuntu-latest'
     steps:
     - task: AzureCLI@2
-      displayName: 'Check Service Health'
+      displayName: 'Get AKS credentials for smoke test'
       inputs:
         azureSubscription: 'AzureServiceConnection'
         scriptType: 'bash'
@@ -126,9 +273,35 @@ stages:
         inlineScript: |
           az aks get-credentials \
             --resource-group $(aksResourceGroup) \
-            --name $(aksCluster) --overwrite-existing
-          kubectl get pods -n microservices
-          kubectl rollout status deployment/auth-service -n microservices --timeout=120s
-          kubectl rollout status deployment/order-service -n microservices --timeout=120s
-          kubectl rollout status deployment/payment-service -n microservices --timeout=120s
-          kubectl rollout status deployment/frontend -n microservices --timeout=120s
+            --name $(aksCluster) \
+            --overwrite-existing
+
+    - script: |
+        # Get Ingress external IP
+        INGRESS_IP=$(kubectl get ingress microservices-ingress \
+          -n $(k8sNamespace) \
+          -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+        echo "Ingress IP: $INGRESS_IP"
+
+        # Helper function for health checks
+        check_health() {
+          local SERVICE=$1
+          local URL=$2
+          local HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" $URL)
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "[PASS] $SERVICE health check returned 200"
+          else
+            echo "[FAIL] $SERVICE health check returned $HTTP_CODE (expected 200)"
+            exit 1
+          fi
+        }
+
+        # Run health checks
+        check_health "auth-service"    "http://$INGRESS_IP/auth/health"
+        check_health "order-service"   "http://$INGRESS_IP/orders/health"
+        check_health "payment-service" "http://$INGRESS_IP/payments/health"
+        check_health "frontend"        "http://$INGRESS_IP/"
+
+        echo "All smoke tests passed!"
+      displayName: 'Run health endpoint smoke tests'
